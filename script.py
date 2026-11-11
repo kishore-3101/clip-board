@@ -93,11 +93,85 @@ def clear_history():
             os.remove(p)
 
 
+CSS = b"""
+window.main, window.main.background {
+    background-color: rgba(0, 0, 0, 0.72);
+    background-image: none;
+    border-radius: 12px;
+}
+window.main box, window.main grid { background: transparent; }
+
+.main label { color: #e6e6e6; font-size: 13px; }
+.main label.muted { color: #777777; font-size: 12px; }
+
+.main entry {
+    background-color: rgba(255, 255, 255, 0.05);
+    background-image: none;
+    color: #f0f0f0;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 8px;
+    box-shadow: none;
+    padding: 9px 12px;
+    min-height: 20px;
+}
+.main entry:focus { border-color: rgba(255, 255, 255, 0.25); }
+
+.main scrolledwindow, .main viewport, .main list {
+    background: transparent;
+}
+.main row {
+    background: transparent;
+    border-radius: 0;
+    margin: 0;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.38);
+}
+.main row:last-child { border-bottom: none; }
+.main row:hover { background-color: rgba(255, 255, 255, 0.05); }
+.main row:selected { background-color: rgba(255, 255, 255, 0.10); }
+.main row:selected label { color: #ffffff; }
+
+.main button {
+    background-image: none;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    text-shadow: none;
+    border-radius: 6px;
+    color: #777777;
+    padding: 4px 8px;
+}
+.main button:hover { background-color: rgba(255, 255, 255, 0.08); color: #e6e6e6; }
+
+.main row button.delete { opacity: 0; }
+.main row:hover button.delete,
+.main row:selected button.delete { opacity: 1; }
+
+.main scrollbar { background: transparent; border: none; }
+.main scrollbar slider {
+    background-color: rgba(255, 255, 255, 0.18);
+    border-radius: 4px;
+    min-width: 4px;
+    border: none;
+}
+"""
+
+
 def ui():
     import gi
     gi.require_version("Gtk", "3.0")
     from gi.repository import Gtk, Gdk, GLib, GdkPixbuf
     GLib.set_prgname("myclip")  # becomes the Sway app_id
+
+    provider = Gtk.CssProvider()
+    provider.load_from_data(CSS)
+    screen = Gdk.Screen.get_default()
+    Gtk.StyleContext.add_provider_for_screen(
+        screen, provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+    def add_class(widget, *names):
+        for n in names:
+            widget.get_style_context().add_class(n)
+        return widget
 
     c = conn()
     items = c.execute(
@@ -105,52 +179,75 @@ def ui():
     c.close()
 
     win = Gtk.Window(title="Clipboard")
-    win.set_default_size(600, 700)
+    add_class(win, "main")
+    win.set_default_size(560, 640)
+    win.set_decorated(False)
+    visual = screen.get_rgba_visual()
+    if visual:
+        win.set_visual(visual)  # needed for transparency
     win.connect("destroy", Gtk.main_quit)
-    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
-    box.set_border_width(8)
+
+    state = {"busy": False}
+
+    box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+    box.set_border_width(12)
     win.add(box)
 
-    search = Gtk.SearchEntry(placeholder_text="Search clipboard...")
+    # search
+    search = Gtk.SearchEntry(placeholder_text="Search")
     box.pack_start(search, False, False, 0)
 
-    header = Gtk.Box(spacing=6)
-    title = Gtk.Label(label="Clipboard History")
-    title.set_xalign(0)
-    header.pack_start(title, True, True, 0)
-    clear_btn = Gtk.Button(label="Clear History")
-    clear_btn.set_tooltip_text("Delete all clipboard history")
-    clear_btn.get_style_context().add_class("destructive-action")
-    header.pack_end(clear_btn, False, False, 0)
-    box.pack_start(header, False, False, 0)
-
+    # list
     scroll = Gtk.ScrolledWindow()
+    scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
     box.pack_start(scroll, True, True, 0)
     lb = Gtk.ListBox()
     lb.set_selection_mode(Gtk.SelectionMode.SINGLE)
     scroll.add(lb)
 
+    empty = add_class(Gtk.Label(label="Nothing copied yet"), "muted")
+    empty.set_no_show_all(True)
+    box.pack_start(empty, True, True, 0)
+
+    # footer
+    footer = Gtk.Box(spacing=8)
+    count = add_class(Gtk.Label(label="", xalign=0), "muted")
+    footer.pack_start(count, True, True, 4)
+    clear_btn = Gtk.Button(label="Clear all")
+    clear_btn.set_tooltip_text("Delete all clipboard history")
+    footer.pack_end(clear_btn, False, False, 0)
+    box.pack_start(footer, False, False, 0)
+
     rows = []
+
+    def refresh_state():
+        n = len(rows)
+        count.set_text(f"{n} item{'s' if n != 1 else ''}")
+        scroll.set_visible(n > 0)
+        empty.set_visible(n == 0)
+        clear_btn.set_sensitive(n > 0)
+
     for it in items:
         item_id, kind, mime, content, path = it
-        hb = Gtk.Box(spacing=10)
-        hb.set_border_width(6)
+        hb = Gtk.Box(spacing=12)
+        hb.set_border_width(8)
 
         if kind == "image":
             try:
-                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 120, 80, True)
+                pb = GdkPixbuf.Pixbuf.new_from_file_at_scale(path, 96, 64, True)
                 hb.pack_start(Gtk.Image.new_from_pixbuf(pb), False, False, 0)
             except Exception:
                 hb.pack_start(Gtk.Image.new_from_icon_name(
-                    "image-x-generic", Gtk.IconSize.DIALOG), False, False, 0)
+                    "image-x-generic-symbolic", Gtk.IconSize.LARGE_TOOLBAR),
+                    False, False, 0)
             text = "Image (" + mime + ")"
         elif kind == "files":
             names = [unquote(u.strip().split("/")[-1])
                      for u in content.splitlines() if u.strip()]
             vid = any(n.lower().endswith((".mp4", ".mkv", ".webm", ".avi", ".mov"))
                       for n in names)
-            icon = "video-x-generic" if vid else "text-x-generic"
-            hb.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.DIALOG),
+            icon = "video-x-generic-symbolic" if vid else "text-x-generic-symbolic"
+            hb.pack_start(Gtk.Image.new_from_icon_name(icon, Gtk.IconSize.LARGE_TOOLBAR),
                           False, False, 0)
             text = "\n".join(names[:5])
             if len(names) > 5:
@@ -160,14 +257,15 @@ def ui():
 
         lbl = Gtk.Label(label=text, xalign=0)
         lbl.set_line_wrap(True)
-        lbl.set_lines(4)
+        lbl.set_lines(3)
         lbl.set_ellipsize(3)
         hb.pack_start(lbl, True, True, 0)
 
-        delete_btn = Gtk.Button()
-        delete_btn.set_image(Gtk.Image.new_from_icon_name("user-trash", Gtk.IconSize.BUTTON))
-        delete_btn.set_tooltip_text("Delete this entry")
-        delete_btn.set_relief(Gtk.ReliefStyle.NONE)
+        delete_btn = add_class(Gtk.Button(), "delete")
+        delete_btn.set_image(Gtk.Image.new_from_icon_name(
+            "window-close-symbolic", Gtk.IconSize.BUTTON))
+        delete_btn.set_tooltip_text("Delete")
+        delete_btn.set_valign(Gtk.Align.CENTER)
         hb.pack_start(delete_btn, False, False, 0)
 
         row = Gtk.ListBoxRow()
@@ -181,6 +279,7 @@ def ui():
             lb.remove(current_row)
             if current_row in rows:
                 rows.remove(current_row)
+            refresh_state()
 
         delete_btn.connect("clicked", delete_clicked)
 
@@ -195,19 +294,22 @@ def ui():
     search.connect("search-changed", lambda e: lb.invalidate_filter())
 
     def clear_clicked(btn):
+        state["busy"] = True
         dialog = Gtk.MessageDialog(
             transient_for=win, flags=0,
-            message_type=Gtk.MessageType.WARNING,
+            message_type=Gtk.MessageType.QUESTION,
             buttons=Gtk.ButtonsType.YES_NO,
             text="Clear clipboard history?")
-        dialog.format_secondary_text("This will permanently delete all clipboard entries.")
+        dialog.format_secondary_text("This permanently deletes all entries.")
         response = dialog.run()
         dialog.destroy()
+        state["busy"] = False
         if response == Gtk.ResponseType.YES:
             clear_history()
             for r in rows[:]:
                 lb.remove(r)
             rows.clear()
+            refresh_state()
 
     clear_btn.connect("clicked", clear_clicked)
 
@@ -234,7 +336,18 @@ def ui():
         return False
 
     win.connect("key-press-event", on_key)
+
+    # close when the window loses focus (popup behaviour)
+    def on_focus_out(w, ev):
+        if not state["busy"]:
+            Gtk.main_quit()
+        return False
+
+    win.connect("focus-out-event", on_focus_out)
+
+    refresh_state()
     win.show_all()
+    refresh_state()  # show_all() un-hides everything, so re-apply visibility
     search.grab_focus()
     Gtk.main()
 
